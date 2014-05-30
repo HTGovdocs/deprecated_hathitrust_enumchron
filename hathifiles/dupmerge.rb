@@ -2,31 +2,42 @@ require 'set'
 require 'library_stdnums'
 require 'zlib'
 
-# Structure of the hathifiles, except I've added a "lineID" at the
-             # front so I have a nice unique integer for each line
+
+filename = ARGV[0]
+STDERR.puts "Filename is #{filename}"
+task = false
+task = :generate if ARGV[1] == 'generate'
+task = :merge    if ARGV[1] == 'merge'
+task = :both     if ARGV[1] == 'generate' and ARGV[2] = 'merge'
 
 
-LINEID   = 0
-VOLID    = 1
-ACCESS   = 2
-RIGHTS   = 3
-HTREC    = 4
-EC       = 5
-SOURCE   = 6
-SIR      = 7 # Source institution's record number
-OCLC     = 8
-ISBN     = 9
-ISSN     = 10
-LCCN     = 11
-TITLE    = 12
-IMPRINT  = 13
-DETCODE  = 14
-UPDATE   = 15
-GDOC     = 16
-PUBDATE  = 17
-PUBPLACE = 18
-LANG     = 19
-FMT      = 20
+STDERR.puts "Task is #{task}"
+unless task
+  STDERR.puts "Exiting: task must be 'generate', 'merge', or 'generate merge'"
+  exit
+end
+
+
+HTID     = 0
+ACCESS   = 1
+RIGHTS   = 2
+HTREC    = 3
+EC       = 4
+SOURCE   = 5
+SIR      = 6 # Source institution's record number
+OCLC     = 7
+ISBN     = 8
+ISSN     = 9
+LCCN     = 10
+TITLE    = 11
+IMPRINT  = 12
+DETCODE  = 13
+UPDATE   = 14
+GDOC     = 15
+PUBDATE  = 16
+PUBPLACE = 17
+LANG     = 18
+FMT      = 29
 
 @identifiers_of_note = {
     'oclc' => [OCLC, proc { |x| x.to_i }], # to_i
@@ -45,23 +56,22 @@ FMT      = 20
 @uid_to_idens        = {}
 
 # Get a place to count stuff, just 'cause it's interesting
-@counts = {
-  :just_a_copy => 0,
-}
-@identifiers_of_note.keys.each {|k| @counts[k] = 0}
+@counts = {}
+@identifiers_of_note.keys.each { |k| @counts[k] = 0 }
 
 EC_JUST_COPY_PAT = /\A\s*(?:c\.|c|copy)\s*\d{1,2}\s*\Z/i
+
 def process_line(l)
-  cols = l.chomp.split(/\t/)
+  cols   = l.chomp.split(/\t/)
 
-  # Is it just a copy? Then skip it like we skip stuff
-  # that has no EC at all.
-  if EC_JUST_COPY_PAT.match(cols[EC])
-    @counts[:just_a_copy] += 1
-    return
-  end
+  ## Is it just a copy? Then skip it like we skip stuff
+  ## that has no EC at all.
+  #if EC_JUST_COPY_PAT.match(cols[EC])
+  #  @counts[:just_a_copy] += 1
+  #  return
+  #end
 
-  uid    = cols[LINEID].to_i
+  uid    = cols[HTID].to_sym
   source = cols[SOURCE]
 
   @identifiers_of_note.each_pair do |idtype, dat|
@@ -85,7 +95,6 @@ def process_line(l)
       @uid_to_idens[uid] = Set.new(idens)
     end
 
-
     idens.each do |iden|
       @iden_to_uids[iden] ||= Set.new
       @iden_to_uids[iden] << uid
@@ -94,8 +103,8 @@ def process_line(l)
 end
 
 
-if ARGV[0] == 'generate'
-  Zlib::GzipReader.new(File.open('hathifiles/ec.txt.gz', 'r:utf-8')).each_with_index do |l, i|
+if [:generate, :both].include? task
+  Zlib::GzipReader.new(File.open(filename, 'r:utf-8')).each_with_index do |l, i|
     process_line(l)
     print '.' if i % 100_000 == 0
   end
@@ -105,26 +114,21 @@ if ARGV[0] == 'generate'
 
   puts "\nGot a total of #{@iden_to_uids.size} identifiers and #{@uid_to_idens.size} uids"
   puts @counts
-  exit
 end
 
-if ARGV[0] != 'merge'
-  puts "Need to give it 'generate' or 'merge'"
-  exit
+# Exit if we're just generating
+exit if task == :generate
+
+# If we're just merging, read from disk
+if task == :merge
+  puts "Loading iden_to_uids"
+  @iden_to_uids = Marshal.load(Zlib::GzipReader.new(File.open('iden_to_uids.marshal.gz')))
+  puts "Loading uid_to_idens"
+  @uid_to_idens = Marshal.load(Zlib::GzipReader.new(File.open('uid_to_idens.marshal.gz')))
 end
-
-# If we're not generating, do the load and merge
-
-puts "Going to merge."
-puts "Loading iden_to_uids"
-@iden_to_uids = Marshal.load(Zlib::GzipReader.new(File.open('iden_to_uids.marshal.gz')))
-puts "Loading uid_to_idens"
-@uid_to_idens = Marshal.load(Zlib::GzipReader.new(File.open('uid_to_idens.marshal.gz')))
 
 # OK. Now I have two giants lists. Now we need to
 # combine them.
-
-
 
 # Recursive UIDS -- get all the UIDS for an identifier
 
@@ -147,22 +151,16 @@ def recursive_uids(baseiden, seen=Set.new)
 end
 
 
-changed = true
-while changed
-  puts "Starting a merge"
-  changed = false
-  @iden_to_uids.each_key do |iden|
-    next unless @iden_to_uids[iden]
-    new_uids = recursive_uids(iden)
-    if new_uids.size > 0
-      changed = true
-      puts "Merged into #{iden}"
-      @iden_to_uids[iden] += new_uids
-    end
+puts "Starting a merge"
+@iden_to_uids.each_key do |iden|
+  next unless @iden_to_uids[iden]
+  new_uids = recursive_uids(iden)
+  if new_uids.size > 0
+    @iden_to_uids[iden] += new_uids
   end
 end
 
-@iden_to_uids.delete_if {|k,v| v == false}
+@iden_to_uids.delete_if { |k, v| v == false }
 
 puts "After merge, got a total of #{@iden_to_uids.size} identifiers and #{@uid_to_idens.size} uids"
 
