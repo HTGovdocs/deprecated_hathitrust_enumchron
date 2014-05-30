@@ -1,0 +1,227 @@
+require 'set'
+require 'library_stdnums'
+require 'zlib'
+
+# Structure of the hathifiles, except I've added a "lineID" at the
+             # front so I have a nice unique integer for each line
+
+
+LINEID   = 0
+VOLID    = 1
+ACCESS   = 2
+RIGHTS   = 3
+HTREC    = 4
+EC       = 5
+SOURCE   = 6
+SIR      = 7 # Source institution's record number
+OCLC     = 8
+ISBN     = 9
+ISSN     = 10
+LCCN     = 11
+TITLE    = 12
+IMPRINT  = 13
+DETCODE  = 14
+UPDATE   = 15
+GDOC     = 16
+PUBDATE  = 17
+PUBPLACE = 18
+LANG     = 19
+FMT      = 20
+
+@identifiers_of_note = {
+    'oclc' => [OCLC, proc { |x| x.to_i }], # to_i
+    'lccn' => [LCCN, StdNum::LCCN.method(:normalize)],
+    'issn' => [ISSN, StdNum::ISSN.method(:normalize)],
+    'isbn' => [ISBN, StdNum::ISBN.method(:normalize)],
+    'sir'  => [SIR, nil], # add source below
+}
+
+# Build up two ginormous hashes: one mapping uids to sets of identifiers,
+# and the other mapping identifiers to sets of uids. For accuracy,
+# we'll normalize all the identifiers (OCLC.to_i, stdnum normalize LCCN/
+# ISBN/ISSN), pass through the sir.
+
+@iden_to_uids        = {}
+@uid_to_idens        = {}
+
+# Get a place to count stuff, just 'cause it's interesting
+@counts = {
+  :just_a_copy => 0,
+}
+@identifiers_of_note.keys.each {|k| @counts[k] = 0}
+
+EC_JUST_COPY_PAT = /\A\s*(?:c\.|c|copy)\s*\d{1,2}\s*\Z/i
+def process_line(l)
+  cols = l.chomp.split(/\t/)
+
+  # Is it just a copy? Then skip it like we skip stuff
+  # that has no EC at all.
+  if EC_JUST_COPY_PAT.match(cols[EC])
+    @counts[:just_a_copy] += 1
+    return
+  end
+
+  uid    = cols[LINEID].to_i
+  source = cols[SOURCE]
+
+  @identifiers_of_note.each_pair do |idtype, dat|
+    col, normalizer = *dat
+    next unless cols[col] =~ /\S/
+
+
+    @counts[idtype] += 1
+    idens           = cols[col].split(',').compact
+
+    idens.map!(&normalizer) if normalizer
+    idens.map! { |x| "#{source}#{x}" } if idtype == 'sir' # special handling
+
+
+    idens.compact!
+    idens.map! { |x| "#{idtype}#{x}" }
+
+    if @uid_to_idens[uid]
+      @uid_to_idens[uid] += idens
+    else
+      @uid_to_idens[uid] = Set.new(idens)
+    end
+
+
+    idens.each do |iden|
+      @iden_to_uids[iden] ||= Set.new
+      @iden_to_uids[iden] << uid
+    end
+  end
+end
+
+
+if ARGV[0] == 'generate'
+  Zlib::GzipReader.new(File.open('hathifiles/ec.txt.gz', 'r:utf-8')).each_with_index do |l, i|
+    process_line(l)
+    print '.' if i % 100_000 == 0
+  end
+
+  Marshal.dump(@iden_to_uids, File.open('iden_to_uids.marshal', 'w:utf-8'))
+  Marshal.dump(@uid_to_idens, File.open('uid_to_idens.marshal', 'w:utf-8'))
+
+  puts "\nGot a total of #{@iden_to_uids.size} identifiers and #{@uid_to_idens.size} uids"
+  puts @counts
+  exit
+end
+
+if ARGV[0] != 'merge'
+  puts "Need to give it 'generate' or 'merge'"
+  exit
+end
+
+# If we're not generating, do the load and merge
+
+puts "Going to merge."
+puts "Loading iden_to_uids"
+@iden_to_uids = Marshal.load(Zlib::GzipReader.new(File.open('iden_to_uids.marshal.gz')))
+puts "Loading uid_to_idens"
+@uid_to_idens = Marshal.load(Zlib::GzipReader.new(File.open('uid_to_idens.marshal.gz')))
+
+# OK. Now I have two giants lists. Now we need to
+# combine them.
+
+
+
+# Recursive UIDS -- get all the UIDS for an identifier
+
+def recursive_uids(baseiden, seen=Set.new)
+  return [] unless @iden_to_uids[baseiden] # base case
+  return if seen.include? baseiden
+  newuids = Set.new
+  seen << baseiden
+  @iden_to_uids[baseiden].each do |uid|
+    next unless @uid_to_idens[uid]
+    @uid_to_idens[uid].each do |iden|
+      next if seen.include? iden
+      newuids += recursive_uids(iden, seen)
+      seen << baseiden
+      @iden_to_uids[iden] = false
+    end
+    @uid_to_idens[uid] = false
+  end
+  newuids
+end
+
+
+changed = true
+while changed
+  puts "Starting a merge"
+  changed = false
+  @iden_to_uids.each_key do |iden|
+    next unless @iden_to_uids[iden]
+    new_uids = recursive_uids(iden)
+    if new_uids.size > 0
+      changed = true
+      puts "Merged into #{iden}"
+      @iden_to_uids[iden] += new_uids
+    end
+  end
+end
+
+@iden_to_uids.delete_if {|k,v| v == false}
+
+puts "After merge, got a total of #{@iden_to_uids.size} identifiers and #{@uid_to_idens.size} uids"
+
+singles = File.open('singles.txt', 'w:utf-8')
+out     = File.open('mastersets.txt', 'w:utf-8')
+@iden_to_uids.each_pair do |iden, uidset|
+  if uidset.size == 1
+    singles.puts "#{uidset.first}"
+  else
+    uidset.each do |uid|
+      out.puts "#{uid}\t#{iden}"
+    end
+  end
+end
+
+
+__END__
+
+# get a mapping of uid => set_of_idens
+# and iden => set_of_uids
+Dir.glob('dups/*.txt').each do |f|
+  File.open(f).each_line do |l|
+    iden, uids = l.chomp.split(/\t/)
+    uids = uids.split(/\|/).map(&:to_i)
+    iden_to_uids[iden] = Set.new(uids)
+    uids.each do |uid|
+      uid_to_iden[uid] ||= Set.new
+      uid_to_iden[uid] << iden
+    end
+  end
+end
+
+puts "Got a total of #{iden_to_uids.size} identifiers and #{uid_to_iden.size} uids"
+
+# OK. Now we need to combine then.
+#
+changed = false
+while changed != 0
+  puts "Merged #{changed} times" if changed
+  changed = 0
+  iden_to_uids.each_pair do |masteriden, uidset|
+    uidset.each do |uid|
+      uid_to_iden[uid].each do |iden|
+        next if iden == masteriden
+        next unless iden_to_uids[iden]
+        iden_to_uids[masteriden] += iden_to_uids[iden]
+        iden_to_uids.delete(iden)
+        changed += 1
+      end
+    end
+  end
+end
+
+puts "After merge, got a total of #{iden_to_uids.size} identifiers and #{uid_to_iden.size} uids"
+
+File.open('dupsets.txt', 'w:utf-8') do |out|
+  iden_to_uids.each_pair do |iden, uidset|
+    uidset.each do |uid|
+      out.puts "#{uid}\t#{iden}"
+    end
+  end
+end
