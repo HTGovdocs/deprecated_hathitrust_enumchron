@@ -1,10 +1,11 @@
 require 'set'
 require 'library_stdnums'
 require 'zlib'
-
+require 'fileutils'
 
 filename = ARGV[0]
-STDERR.puts "Filename is #{filename}"
+basename = filename.gsub(/(?:.txt)?(:?.gz)?\Z/, '')
+STDERR.puts "Filename is #{filename}; basename is #{basename}"
 task = false
 task = :generate if ARGV[1] == 'generate'
 task = :merge    if ARGV[1] == 'merge'
@@ -16,6 +17,12 @@ unless task
   STDERR.puts "Exiting: task must be 'generate', 'merge', or 'generate merge'"
   exit
 end
+
+# Figure out where the marshalling occurs
+marshal_dir = "marshal/#{basename}"
+FileUtils::mkdir_p marshal_dir
+i2ufile = File.join(marshal_dir, 'i2u.marshal.gz')
+u2ifile = File.join(marshal_dir, 'u2i.marshal.gz')
 
 
 HTID     = 0
@@ -109,8 +116,12 @@ if [:generate, :both].include? task
     print '.' if i % 100_000 == 0
   end
 
-  Marshal.dump(@iden_to_uids, File.open('iden_to_uids.marshal', 'w:utf-8'))
-  Marshal.dump(@uid_to_idens, File.open('uid_to_idens.marshal', 'w:utf-8'))
+
+  u2idump = Zlib::GzipWriter.new(File.new(u2ifile, 'w:utf-8'))
+  i2udump = Zlib::GzipWriter.new(File.new(i2ufile, 'w:utf-8'))
+
+  Marshal.dump(@iden_to_uids, i2udump)
+  Marshal.dump(@uid_to_idens, u2idump)
 
   puts "\nGot a total of #{@iden_to_uids.size} identifiers and #{@uid_to_idens.size} uids"
   puts @counts
@@ -122,9 +133,9 @@ exit if task == :generate
 # If we're just merging, read from disk
 if task == :merge
   puts "Loading iden_to_uids"
-  @iden_to_uids = Marshal.load(Zlib::GzipReader.new(File.open('iden_to_uids.marshal.gz')))
+  @iden_to_uids = Marshal.load(Zlib::GzipReader.new(File.open(i2ufile)))
   puts "Loading uid_to_idens"
-  @uid_to_idens = Marshal.load(Zlib::GzipReader.new(File.open('uid_to_idens.marshal.gz')))
+  @uid_to_idens = Marshal.load(Zlib::GzipReader.new(File.open(u2ifile)))
 end
 
 # OK. Now I have two giants lists. Now we need to
