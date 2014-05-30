@@ -129,7 +129,11 @@ if [:generate, :both].include? task
   i2udump = Zlib::GzipWriter.new(File.new(i2ufile, 'w:utf-8'))
 
   Marshal.dump(@iden_to_uids, i2udump)
+  i2ufile.close
+
   Marshal.dump(@uid_to_idens, u2idump)
+  u2idump.close
+
 
   puts "\nGot a total of #{@iden_to_uids.size} identifiers and #{@uid_to_idens.size} uids"
   puts @counts
@@ -194,6 +198,9 @@ out     = Zlib::GzipWriter.new(File.open(masterfile, 'w:utf-8'))
     end
   end
 end
+
+singles.close
+out.close
 
 
 __END__
