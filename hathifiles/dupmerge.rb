@@ -129,7 +129,7 @@ if [:generate, :both].include? task
   i2udump = Zlib::GzipWriter.new(File.new(i2ufile, 'w:utf-8'))
 
   Marshal.dump(@iden_to_uids, i2udump)
-  i2ufile.close
+  i2udump.close
 
   Marshal.dump(@uid_to_idens, u2idump)
   u2idump.close
