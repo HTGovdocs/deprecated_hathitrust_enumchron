@@ -20,10 +20,18 @@ end
 
 # Figure out where the marshalling occurs
 marshal_dir = "marshal/#{basename}"
-FileUtils::mkdir_p marshal_dir
+FileUtils::mkpath marshal_dir
 i2ufile = File.join(marshal_dir, 'i2u.marshal.gz')
 u2ifile = File.join(marshal_dir, 'u2i.marshal.gz')
 
+# Ditto with data_dir
+data_dir = "data/#{basename}"
+FileUtils::mkpath data_dir
+masterfile = File.join(data_dir, 'mastersets.txt.gz')
+singlefile = File.join(data_dir, 'singles.txt.gz')
+
+
+# What's the hathifile look like?
 
 HTID     = 0
 ACCESS   = 1
@@ -175,8 +183,8 @@ end
 
 puts "After merge, got a total of #{@iden_to_uids.size} identifiers and #{@uid_to_idens.size} uids"
 
-singles = File.open('singles.txt', 'w:utf-8')
-out     = File.open('mastersets.txt', 'w:utf-8')
+singles = Zlib::GzipWriter.new(File.open(singlefile, 'w:utf-8'))
+out     = Zlib::GzipWriter.new(File.open(masterfile, 'w:utf-8'))
 @iden_to_uids.each_pair do |iden, uidset|
   if uidset.size == 1
     singles.puts "#{uidset.first}"
