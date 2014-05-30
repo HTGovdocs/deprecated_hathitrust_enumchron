@@ -4,7 +4,7 @@ require 'zlib'
 require 'fileutils'
 
 filename = ARGV[0]
-basename = filename.gsub(/(?:.txt)?(:?.gz)?\Z/, '')
+basename = File.basename(filename, '.txt.gz')
 STDERR.puts "Filename is #{filename}; basename is #{basename}"
 task = false
 task = :generate if ARGV[1] == 'generate'
