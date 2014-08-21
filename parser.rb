@@ -21,6 +21,8 @@ class ECParser < Parslet::Parser
   rule(:spcolon) { space | colon }
   rule(:gsep) { spcolon.maybe }
 
+  rule(:roman) { str('iii') | str('ii') | str('i') | str('iv') | str('v') }
+
 
   rule(:rangesep) { space? >> (dash | slash | colon) >> space? }
 
@@ -28,6 +30,7 @@ class ECParser < Parslet::Parser
   rule(:d2) { digit.repeat(2, 2) }
 
   rule(:drange) { digits.as(:start) >> rangesep >> digits.as(:end) | digits.as(:single) }
+  rule(:romanrange) { roman.as(:start) >> rangesep >> roman.as(:end) | roman.as(:single)}
 
   # Year ranges: 1999-2000, 1988-89, 88-91
   # More restrictive than generic ranges
@@ -40,7 +43,20 @@ class ECParser < Parslet::Parser
   # Year lists
   rule(:listsep) { str(',') >> space? }
   rule(:dlist) { drange >> (listsep >> dlist).repeat(0) }
-  rule(:ylist) { yrange.as(:year) >> (listsep >> ylist).repeat(0) }
+  rule(:rlist) { romanrange >> (listsep >> rlist).repeat(0) }
+  rule(:ylist) { (str('year') | str('yr') >> dot?).maybe >> yrange.as(:year) >> (listsep >> ylist).repeat(0) }
+
+  # letter ranges
+  rule(:single_letter) { match['a-z'] }
+  rule(:letter_range) { single_letter.as(:start) >> rangesep >> single_letter.as(:end) | single_letter }
+
+  # Copy
+  rule(:copyabbr) { str('cop') | str('cp') | str('c') }
+  rule(:copytext) { str('copy') | copyabbr >> dot? }
+  rule(:copy) { copytext >> gsep >> digits.as(:copy) }
+
+  # Maps?
+  rule(:maps) { (str('maps') | str('map')).as(:map) }
 
   # Volume
   rule(:volabbr) { str('vols') | str('vol') | str('vs') | str('v') }
@@ -50,7 +66,24 @@ class ECParser < Parslet::Parser
   # Part
   rule(:partabbr) { str('pts') | str('pt') }
   rule(:parttext) { str('parts') | str('part') | partabbr >> dot? }
-  rule(:part) { parttext >> gsep >> dlist.as(:parts) }
+  rule(:partnum) { dlist | rlist |
+           single_letter.as(:letter) >> (dash | colon).maybe >> digit.as(:digit) |
+           single_letter.as(:letter) >> (dash | colon) >> roman.as(:roman) |
+           letter_range}
+  rule(:part) { parttext >> gsep >> partnum.as(:parts) }
+
+  # Section -- basically the same as 'part'
+  rule(:sectionabbr) { str('sects') | str('sect') | str('secs') | str('sec') }
+  rule(:sectiontext) { str('sections') | str('section') | sectionabbr >> dot? }
+  rule(:section) { sectiontext >> gsep >> partnum.as(:sections)}
+
+  # Series / New series
+  rule(:seriestext) { str('series') | str('ser') >> dot? }
+  rule(:newseriestext) { str('new') >> space >> seriestext }
+  rule(:series) { seriestext >> gsep >> partnum.as(:series) }
+
+  # Alternately, it just notes "new series"
+  rule(:ns) { str('new series') | str('new ser') >> dot? | str('n.s.') }
 
   # Number
   rule(:numabbr) {
@@ -142,7 +175,7 @@ class ECParser < Parslet::Parser
 
 
   # Pull it all together
-  rule(:comp) { vol | part | number | report  | quarter | anydate | edition | ord.as(:ord) | suppl | ylist }
+  rule(:comp) { vol | part | copy | number | report  | series | ns.as(:new_series) | section | quarter | maps | anydate | edition | ord.as(:ord) | suppl | ylist }
   rule(:ec_delim) { space? >> (str(',')|str(':')) >> space? | space }
   rule(:ec) { comp >> (ec_delim.maybe >> ec).repeat(0) | dlist.as(:rawdigits) }
   rule(:ecp) { lparen >> space? >> ec >> space? >> rparen | ec }
