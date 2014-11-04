@@ -21,7 +21,34 @@ class ECParser < Parslet::Parser
   rule(:spcolon) { space | colon }
   rule(:gsep) { spcolon.maybe }
 
-  rule(:roman) { str('iii') | str('ii') | str('i') | str('iv') | str('v') }
+
+
+  # Roman numerals are a pain in the butt. We'll create the programatically.
+
+  roman_numerals = %w(
+   i
+   ii
+   iii
+   iv
+   v
+   vi
+   vii
+   viii
+   ix
+   x
+   xi
+   xii
+   xiii
+   xiv
+   xv
+   xvi
+   xvii
+   xviii
+   xix
+   xx
+  )
+
+  rule(:roman) { roman_numerals.sort{|a,b| b.length <=> a.length }.map{|x| str(x)}.reduce(&:|) }
 
 
   rule(:rangesep) { space? >> (dash | slash | colon) >> space? }
@@ -159,7 +186,7 @@ class ECParser < Parslet::Parser
       str('nov') |
       str('dec') }
 
-  rule(:anymonth) { fullmonth | shortmonth >> str('.').maybe }
+  rule(:anymonth) { fullmonth | shortmonth >> dot? }
   rule(:monthrange) { anymonth.as(:start) >> rangesep >> anymonth.as(:end) }
   rule(:month) { monthrange | anymonth.as(:single) }
   rule(:datestr) { anymonth.as(:month) >> space? >> digits.as(:day) }
