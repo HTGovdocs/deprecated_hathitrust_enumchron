@@ -7,7 +7,7 @@ class ECParser < Parslet::Parser
     lv_generator('number', 'numbers', 'nos', 'no', 'n')
     lv_generator('volume', 'volumes', 'vols', 'vol', 'vs', 'v')
     lv_generator('part', 'parts', 'pts', 'pt')
-    lv_generator('copy', 'copies', 'cps', 'cp', 'c')
+    lv_generator('copy', 'copies', 'cops', 'cop', 'cps', 'cp', 'c')
     lv_generator('series', 'series', 'ser', 'n.s', 'ns')
     lv_generator('report', 'reports', 'repts', 'rept', 'rep', 'r')
     lv_generator('section', 'section', 'sects', 'sect', 'secs', 'sec')
@@ -73,10 +73,13 @@ class ECParser < Parslet::Parser
   rule(:year_list) { year_list_component >> (list_sep >> year_list).repeat(0) }
 
   # A generic list of letters or letter-ranges
+  # The kicker is that we can't have a "list" of letters without a delimiter;
+  # we call that a "word" ;-)
+
   rule(:letter_range) { letter.as(:start) >> range_sep >> letter.as(:end)}
   rule(:letter_list_component) { letter_range.as(:range) | letter.as(:single) }
-  rule(:letter_list) { letter_list_component >> (list_sep >> letter_list).repeat(0) }
-  rule(:letters) { letter_list.as(:letters) }
+  rule(:letter_list) { letter_list_component >> (list_sep >> letter_list).repeat(1) }
+  rule(:letters) { (letter_list | letter_range).as(:letters) }
 
   # Same thing, but for numbers/ranges
   rule(:numeric_range) { digits.as(:start) >> range_sep >> digits.as(:end)}
@@ -94,10 +97,23 @@ class ECParser < Parslet::Parser
   rule(:year_implicit) { year_list.as(:iyears) }
 
 
+  # The "explicit" rule is added to by lv_generator, which sets @expl
   rule(:explicit) { year_explicit | @expl }
 
+  # Sometimes, there's an unknown list of letters or number and we
+  # just don't know what it is
+
+  rule(:unknown_list) { (numerics | letters).as(:unknown_list) }
+
+
+  # Sometimes it'll be labeled as "index". Just note that.
+  rule(:index) { str('index').as(:index) }
+
+
   rule(:comp) { explicit |
-                year_implicit }
+                year_implicit |
+                index |
+                unknown_list }
 
   rule(:ec_delim) { space? >> (comma | colon)  >> space? | space }
   rule(:ec) { comp >> (ec_delim >> ec).repeat(1) | comp }
@@ -118,14 +134,16 @@ if __FILE__ == $0
   p = ECParser.new
   File.open('just_parsed.txt', 'w:utf-8') do |ep|
     File.open('just_failed.txt', 'w:utf-8') do |ef|
-      File.open(ARGV[0]).each do |l|
+      infile = ARGV[0].nil? ? $stdin : File.open(ARGV[0])
+      infile.each do |l|
         orig = l
         l.chomp!
         l.downcase!
         l.gsub!('*', '')
+        l.gsub!(/\t/, ' ')
         begin
           pt = p.parse(l)
-          ep.puts "#{orig} -- #{pt}"
+          ep.puts "#{orig}\t#{pt}"
         rescue Parslet::ParseFailed
           ef.puts l
         end
