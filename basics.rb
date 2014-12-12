@@ -1,5 +1,6 @@
 require 'parslet'
 require 'concurrent'
+require 'thread'
 
 
 class ECParser < Parslet::Parser
@@ -60,6 +61,7 @@ class ECParser < Parslet::Parser
 
   rule(:list_sep) { comma >> space? }
   rule(:range_sep) { space? >> dash >> space? }
+  rule(:slash_sep) { space? >> slash >> space? }
 
   # What separates a label and its value? A colon, space, or nothing
   rule(:lv_sep) { colon >> space? | space? }
@@ -116,11 +118,11 @@ class ECParser < Parslet::Parser
 
 
   # Ordinals
-  rule(:ord_first) { str('1st') }
-  rule(:ord_second) { str('2nd') }
-  rule(:ord_third) { str('3rd') }
-  rule(:ord_other) { match['4567890'] >> str('th') }
-  rule(:ord) { digits.maybe >> (ord_first | ord_second | ord_third | ord_other) }
+  # We cheat; assume any digits followed by 'st', 'nd', 'rd', or 'th'
+  rule(:ord_suffix) { str('st') | str('nd') | str('rd') | str('th') }
+  rule(:ord) { digits.as(:num) >> ord_suffix }
+  rule(:ord_range) { (ord | digits).as(:start) >> range_sep >> ord.as(:end) }
+  rule(:ords) { (ord_range | ord).as(:ords) }
 
   # Months of the year
   rule(:jan) { str('january') | str('jan') >> dot? }
@@ -135,10 +137,34 @@ class ECParser < Parslet::Parser
   rule(:oct) { str('october') | str('oct') >> dot? }
   rule(:nov) { str('november') | str('nov') >> dot? }
   rule(:dec) { str('december') | str('dec') >> dot? }
-  rule(:month) { jan | feb | mar| apr | may | jun | jul | aug | sept | oct | nov | dec }
 
+  rule(:month) { jan | feb | mar| apr | may | jun | jul | aug | sept | oct | nov | dec }
+  rule(:month_range) { month.as(:start) >> (range_sep | slash_sep) >> month.as(:end) }
+  rule(:month_list_component) { month_range.as(:range) | month.as(:single) }
+  rule(:month_list) { month_list_component >> (list_sep >> month_list).repeat(1) }
+  rule(:months) { (month_list | month_list_component).as(:months) }
 
   # Year/month, month/year
+
+  rule(:ymsep) { space | (space? >> colon >> space?) }
+  rule(:yearmonth) { (year_list.as(:years) >> ymsep >> months.as(:months)).as(:ym) }
+  rule(:monthyear) { (months >> ymsep >> year_list.as(:years)).as(:ym) }
+
+  # Seasons
+  rule(:winter) { str('winter') | (str('wint') >> dot?) | (str('wtr') >> dot?) }
+  rule(:summer) { str('summer') | str('summ') >> dot? }
+  rule(:fall)   { str('fall') | str('autumn') | str('aut') }
+  rule(:spring) { str('spring') | str('spr') >> dot? }
+  rule(:season) { winter | spring | summer | fall }
+  rule(:season_range) { season.as(:start) >> (range_sep | slash_sep) >> season.as(:end) }
+  rule(:season_list_component) { season_range.as(:range) | season.as(:single) }
+  rule(:season_list) { season_list_component >> (list_sep >> season_list).repeat(1) }
+  rule(:seasons) { (season_list | season_list_component).as(:seasons) }
+
+  # sudocs that start with 3 or 4
+  rule(:sudocchar) { digit | colon | slash }
+  rule(:sudoc) { (str('3') | str('4')) >> dot >> sudocchar.repeat(1) }
+
 
   # A supplement or an index just sitting by itself; sometimes it has a list
   rule(:suppl_label) { (str('supplement') | str('suppl') >> dot? | str('supp') >> dot?) }
@@ -148,6 +174,15 @@ class ECParser < Parslet::Parser
 
   # Sometimes there's a "new series"
   rule(:ns) { (str('new series') | str('new ser.') | str('new ser') | str('n.s.')).as(:ns) }
+
+  # ...or an indication that it's an annual summary instead of the real deal
+  rule(:annual) { str('annual summaries') | str('annual summary') }
+
+  # ...or a note that this is a revision (or has been revised???)
+  rule(:rev) { str('revision') | str('rev') }
+
+  # ...or a notation that its incomplete
+  rule(:incomplete) { str('incomplete') | str('incompl') >> dot? }
 
   # An explicit year is one that includes a 'year' or 'yr'
   rule(:year_text) { str('year') | (str('yr') >> dot?) }
@@ -166,18 +201,23 @@ class ECParser < Parslet::Parser
   rule(:unknown_list) { (numerics | letter_range.as(:range)).as(:unknown_list) }
 
 
-  rule(:comp) { explicit |
+  rule(:comp) { ords |
+      explicit |
+      yearmonth | monthyear |
       year_implicit |
-      ind | suppl | ns | ord.as(:uord) |
+      ind | suppl | ns |
+      seasons | months |
+      annual | rev | incomplete |
       unknown_list }
 
   rule(:ec_delim) { space? >> (comma | colon) >> space? | space }
   rule(:ec) { comp >> (ec_delim >> ec).repeat(1) | comp }
   rule(:ecp) { lparen >> space? >> ec >> space? >> rparen | ec }
   rule(:ecset) { ecp >> (ec_delim.maybe >> ecset).repeat(1) | ecp }
+  rule(:ecset_or_sudoc) { sudoc.as(:sudoc) | ecset }
 
 
-  root(:ecset)
+  root(:ecset_or_sudoc)
 end
 
 
@@ -218,7 +258,9 @@ def to_char_or_charrange(x)
   end
 end
 
+
 def year_endpoint_transform(f,s)
+  return f,s if f.is_a? DualYear or s.is_a? DualYear
   f = f.to_s
   s = s.to_s
   if f.size == 4 and s.size == 2
@@ -241,8 +283,8 @@ def year_endpoint_transform(f,s)
       s = '19' + s
     end
   end
-  f = Integer(f)
-  s = Integer(s)
+  f = Integer(f) if f.is_a? String
+  s = Integer(s) if s.is_a? String
   return f,s
 end
 
@@ -256,8 +298,26 @@ def slashed_year(f,s, year1 = 1900, year2 = 2050)
   end
 end
 
-DualYear  = Struct.new(:firstval, :lastval)
-YearRange = Struct.new(:firstval, :lastval)
+Numlet = Struct.new(:num,:let)
+
+DualYear  = Struct.new(:firstval, :lastval) do
+  def to_i
+    self
+  end
+end
+
+DualRange = Struct.new(:firstval, :lastval)
+
+YearRange = Struct.new(:firstval, :lastval) do
+  def to_i
+    begin
+      firstval..lastval
+    rescue ArgumentError
+      DualRange.new(firstval, lastval)
+    end
+
+  end
+end
 
 
 class ECTransform < Parslet::Transform
@@ -275,6 +335,9 @@ class ECTransform < Parslet::Transform
   rule(:year_dual => {:start => simple(:s), :end=>simple(:e)}) { slashed_year(s,e)}
   rule(:year_range =>{:start => simple(:s), :end=>simple(:e)}) { YearRange.new(*year_endpoint_transform(s,e))}
 
+  rule(:iyears => simple(:x)) { {:years => [x.to_i]} }
+  rule(:iyears => sequence(:a)) { {:years => a.map{|x| x.to_i}}}
+  rule(:numlets=>{:single=>{:numpart=>simple(:n), :letpart=>simple(:l)}}) { Numlet.new(Integer(n),l)}
 
 end
 
@@ -317,6 +380,9 @@ if __FILE__ == $0
   end
 
 
+  pm = Mutex.new
+  em = Mutex.new
+
   File.open('just_parsed.txt', 'w:utf-8') do |ep|
     File.open('just_failed.txt', 'w:utf-8') do |ef|
       infile = ARGV[0].nil? ? $stdin : File.open(ARGV[0])
@@ -325,11 +391,20 @@ if __FILE__ == $0
           begin
             orig = x
             pt = p.parse(preprocess_line(x))
-            ep.puts '%-20s %s' % [x, t.apply(pt)]
+            pm.synchronize do
+              ep.puts '%-20s %s' % [x, t.apply(pt)]
+            end
+
           rescue Parslet::ParseFailed
-            ef.puts x
+            em.synchronize do
+              ef.puts x
+            end
+
           rescue => e
-            ef.puts '%-20s %s' % [x, e]
+            em.synchronize do
+              ef.puts '%-20s %s' % [x, e]
+            end
+
           end
         end
       end
