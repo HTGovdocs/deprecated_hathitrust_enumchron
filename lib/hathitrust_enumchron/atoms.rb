@@ -25,6 +25,7 @@ module HT
 
     rule(:list_and) { comma | plus }
     rule(:list_comma) { space? >> list_and >> space? }
+    rule(:list_sep) { list_comma }
 
   end
 end
