@@ -1,414 +1,221 @@
 require 'parslet'
-require 'concurrent'
-require 'thread'
 
-
-class ECParser < Parslet::Parser
-
-  def initialize(*args)
-    super
-    lv_generator('number', 'numbers', 'nos', 'no', 'n')
-    lv_generator('volume', 'volumes', 'vols', 'vol', 'vs', 'v')
-    lv_generator('part', 'parts', 'pts', 'pt')
-    lv_generator('copy', 'copies', 'cops', 'cop', 'cps', 'cp', 'c')
-    lv_generator('series', 'series', 'ser', 'n.s', 'ns')
-    lv_generator('report', 'reports', 'repts', 'rept', 'rep', 'r')
-    lv_generator('section', 'section', 'sects', 'sect', 'secs', 'sec')
-    lv_generator('appendix', 'appendices', 'apps', 'app')
-    lv_generator('title', 'titles', 'ti', 't')
-
+module HT
+  module Atoms
+    include Parslet
+    rule(:space) { match('\s').repeat(1) }
+    rule(:space?) { space.maybe }
+    rule(:dot) { str('.') }
+    rule(:dot?) { dot.maybe }
+    rule(:digit) { match('\d') }
+    rule(:digits) { digit.repeat(1) }
+    rule(:digits?) { digit.repeat(0) }
+    rule(:letter) { match('[a-z]') }
+    rule(:letters) { letter.repeat(1) }
+    rule(:letters?) { letter.repeat(0) }
+    rule(:dash) { str('-') }
+    rule(:slash) { str('/') }
+    rule(:lparen) { str('(') }
+    rule(:rparen) { str(')') }
+    rule(:colon) { str(':') }
+    rule(:plus) { str('+') }
+    rule(:comma) { str(',') }
+    
+    rule(:list_comma) { space? >> comma >> space? }
+        
   end
+end
 
-  rule(:safe_letter) { match['abdefghijklmopqrsuwxyz']}
+# Build up a range-or-single based on the passed
+# in rule to determine what an atom on either side of
+# the range might look like (e.g., if you want digits ,
+# pass in a digit)
 
-  # A generator for explicit parts: a label (vol, num, part, etc.) followed
-  # by a list of either a number_list or letter_list
+class HT::Range < Parslet::Parser
+  include HT::Atoms
+  
+  rule(:range_sep_str) { dash }
+  rule(:range_sep) { space? >> range_sep_str >> space? }
+  rule(:strict_range) { base.as(:start) >> range_sep >> base.as(:end) }
+  rule(:range)   { strict_range.as(:range) | base.as(:single) }
+  root :range
+  
+  def initialize(base)
+    super()
+    self.class.rule(:base) { base }
+  end
+end
 
-  def lv_generator(singular, plural, *abbr)
-    text_sym     = "#{singular}_text".to_sym
-    explicit_sym = "#{singular}_explicit".to_sym
-    plural_sym   = "#{plural}".to_sym
 
-    label_rule = str(plural) | str(singular)
-    abbr_label = abbr.map { |a| str(a) }.inject(&:|)
-    label      = label_rule | (abbr_label >> dot?)
-    self.class.rule(explicit_sym) { label >> lv_sep >> (numlets | numerics | letters ).as(plural_sym) }
+class HT::List < Parslet::Parser
+  include HT::Atoms
+  
+  def initialize(list_sep, list_component)
+    super()
+    self.class.rule(:list_sep) { list_sep }
+    self.class.rule(:list_component) { list_component }
+  end
+  
+  rule(:list)  {  list_component >> (list_sep >> list_component).repeat}
+  root :list
+end
 
-    if @expl.nil?
-      @expl = self.send(explicit_sym)
-    else
-      @expl = @expl | self.send(explicit_sym)
+
+class HT::TaggedList < Parslet::Parser
+  include HT::Atoms
+  
+  def initialize(tag_name, tag_strings, list_parser=nil)
+    super()
+    tag_strings.sort! {|a,b| b.length <=> a.length }
+    tags = str(tag_strings.shift)
+    while !tag_strings.empty?
+      tags = tags | str(tag_strings.shift)
     end
+    self.class.rule(:tag) { tags }   
+    
+    list_type = list_parser || self.default_list
+    self.class.rule(:list) { list_type }
+    self.class.rule(:tagged_list) { tag >> dot? >> space? >> list.as(tag_name.to_sym) }
   end
-
-  rule(:space) { match('\s').repeat(1) }
-  rule(:space?) { space.maybe }
-  rule(:dot) { str('.') }
-  rule(:dot?) { dot.maybe }
-  rule(:digit) { match('\d') }
-  rule(:digits) { digit.repeat(1) }
-  rule(:digits?) { digit.repeat(0) }
-  rule(:letter) { match('[a-z]') }
-  rule(:letters) { letter.repeat(1) }
-  rule(:letters?) { letter.repeat(0) }
-  rule(:dash) { str('-') }
-  rule(:slash) { str('/') }
-  rule(:lparen) { str('(') }
-  rule(:rparen) { str(')') }
-  rule(:colon) { str(':') }
-  rule(:comma) { str(',') }
-  rule(:plus) { str('+') }
-
-  rule(:list_sep) { comma >> space? }
-  rule(:range_sep) { space? >> dash >> space? }
-  rule(:slash_sep) { space? >> slash >> space? }
-
-  # What separates a label and its value? A colon, space, or nothing
-  rule(:lv_sep) { colon >> space? | space? }
+  
+  rule(:drange) { HT::Range.new(digits) }
+  rule(:lrange) { HT::Range.new(letter) }
+  
+  rule(:dlist)  { HT::List.new(list_comma, drange).as(:digits) }
+  rule(:llist)  { HT::List.new(list_comma, lrange).as(:letters) }
+  rule(:default_list) { dlist | llist }
+  
+  
+  
+  root :tagged_list
+end
+  
 
 
-  rule(:digits4) { digit.repeat(4) }
-  rule(:digits2) { digit.repeat(2) }
+class HT::Year < Parslet::Parser
+  include HT::Atoms
+  rule(:year)   { (str('1') | str('2')) >> digit.repeat(3,3) }
+  rule(:yrange) { HT::Range.new(year)   }
+  rule(:iyear)  { HT::List.new(list_comma, yrange) }
+  rule(:tyear)  { HT::TaggedList.new(:tyear, %w[years year yrs yr], self.iyear)}
+end  
 
-  rule(:year4) { digits4 }
-  rule(:year2) { digits2 }
-  rule(:year_end) { year4 | year2 }
-  rule(:year_dual) { (year4.as(:start) >> slash >> year_end.as(:end)).as(:year_dual) }
-  rule(:year_range) { (year4.as(:start) >> dash >> year_end.as(:end)).as(:year_range) }
-  rule(:year_dual_range) { (year_dual.as(:start) >> range_sep >> (year_dual | year_end).as(:end)).as(:year_range) }
-  rule(:year_list_component) { year_dual_range.as(:range) | year_range.as(:range) | year_dual.as(:dual) | year4.as(:single) }
-  rule(:year_list) { year_list_component >> (list_sep >> year_list).repeat(0) }
-
-
-
-  # A generic list of letters or letter-ranges
-  # The kicker is that we can't have a "list" of letters without a delimiter;
-  # we call that a "word" ;-)
-
-  rule(:letter_range) { letter.as(:start) >> range_sep >> letter.as(:end) }
-  rule(:letter_list_component) { letter_range.as(:range) | letter.as(:single) }
-  rule(:letter_list) { letter_list_component >> (list_sep >> letter_list).repeat(1) }
-  rule(:letters) { (letter_list | letter_list_component).as(:letters) }
-
-  # A "safe" letter range starts with (or just consists of) a letter that is
-  # not used by itself to indicate a named part (e.g. v for volume)
-
-  rule(:safe_letter_list_component) { letter_range.as(:range) | safe_letter.as(:single) }
-  rule(:safe_letter_list) { safe_letter_list_component >> (list_sep >> letter_list).repeat(1) }
-  rule(:safe_letters) { (safe_letter_list | safe_letter_list_component).as(:letters) }
-
-
-
-  # Same thing, but for numbers/ranges
-  rule(:numeric_range) { digits.as(:start) >> range_sep >> digits.as(:end) }
-  rule(:numeric_list_component) { numeric_range.as(:range) | digits.as(:single) }
-  rule(:numeric_list) { numeric_list_component >> (list_sep >> numeric_list).repeat(0) }
-  rule(:numerics) { numeric_list.as(:numeric) }
-
-  # Again, but this time support number-letter combinations, like 4a-5b or
-  # 4a-b. We can't really support 5a,b because of conflicts with things
-  # like "no. 5a,v3" where the 'v' should mean 'volume'
-
-  rule(:numlet) { digits.as(:numpart) >> letter_list_component.as(:letpart) }
-  rule(:numlet_range) { numlet.as(:start) >> range_sep >> numlet.as(:end) }
-  rule(:numlets) {(numlet_range.as(:range) | numlet.as(:single)).as(:numlets)}
-
-
-
-
-
-  # Ordinals
-  # We cheat; assume any digits followed by 'st', 'nd', 'rd', or 'th'
-  rule(:ord_suffix) { str('st') | str('nd') | str('rd') | str('th') }
-  rule(:ord) { digits.as(:num) >> ord_suffix }
-  rule(:ord_range) { (ord | digits).as(:start) >> range_sep >> ord.as(:end) }
-  rule(:ords) { (ord_range | ord).as(:ords) }
-
-  # Months of the year
-  rule(:jan) { str('january') | str('jan') >> dot? }
-  rule(:feb) { str('february') | str('feb') >> dot? }
-  rule(:mar) { str('march') | str('mar') >> dot? }
-  rule(:apr) { str('april') | str('apr') >> dot? }
-  rule(:may) { str('may') }
-  rule(:jun) { str('june') | str('jun') >> dot? }
-  rule(:jul) { str('july') | str('jul') >> dot? }
-  rule(:aug) { str('august') | str('aug') >> dot? }
-  rule(:sept) { str('september') | (str('sept') | str('sep')) >> dot? }
-  rule(:oct) { str('october') | str('oct') >> dot? }
-  rule(:nov) { str('november') | str('nov') >> dot? }
-  rule(:dec) { str('december') | str('dec') >> dot? }
-
-  rule(:month) { jan | feb | mar| apr | may | jun | jul | aug | sept | oct | nov | dec }
-  rule(:month_range) { month.as(:start) >> (range_sep | slash_sep) >> month.as(:end) }
-  rule(:month_list_component) { month_range.as(:range) | month.as(:single) }
-  rule(:month_list) { month_list_component >> (list_sep >> month_list).repeat(1) }
-  rule(:months) { (month_list | month_list_component).as(:months) }
-
-  # Year/month, month/year
-
-  rule(:ymsep) { space | (space? >> colon >> space?) }
-  rule(:yearmonth) { (year_list.as(:years) >> ymsep >> months.as(:months)).as(:ym) }
-  rule(:monthyear) { (months >> ymsep >> year_list.as(:years)).as(:ym) }
-
-  # Seasons
-  rule(:winter) { str('winter') | (str('wint') >> dot?) | (str('wtr') >> dot?) }
-  rule(:summer) { str('summer') | str('summ') >> dot? }
-  rule(:fall)   { str('fall') | str('autumn') | str('aut') }
-  rule(:spring) { str('spring') | str('spr') >> dot? }
-  rule(:season) { winter | spring | summer | fall }
-  rule(:season_range) { season.as(:start) >> (range_sep | slash_sep) >> season.as(:end) }
-  rule(:season_list_component) { season_range.as(:range) | season.as(:single) }
-  rule(:season_list) { season_list_component >> (list_sep >> season_list).repeat(1) }
-  rule(:seasons) { (season_list | season_list_component).as(:seasons) }
-
-  # sudocs that start with 3 or 4
-  rule(:sudocchar) { digit | colon | slash }
-  rule(:sudoc) { (str('3') | str('4')) >> dot >> sudocchar.repeat(1) }
-
-
-  # A supplement or an index just sitting by itself; sometimes it has a list
-  rule(:suppl_label) { (str('supplement') | str('suppl') >> dot? | str('supp') >> dot?) }
-  rule(:ind_label) { str('index') }
-  rule(:suppl) { (suppl_label >> lv_sep >> (numerics | safe_letters) | suppl_label).as(:suppl) }
-  rule(:ind) { ((ind_label >> lv_sep >> (numerics | safe_letters)) | ind_label).as(:index) }
-
-  # Sometimes there's a "new series"
-  rule(:ns) { (str('new series') | str('new ser.') | str('new ser') | str('n.s.')).as(:ns) }
-
-  # ...or an indication that it's an annual summary instead of the real deal
-  rule(:annual) { str('annual summaries') | str('annual summary') }
-
-  # ...or a note that this is a revision (or has been revised???)
-  rule(:rev) { str('revision') | str('rev') }
-
-  # ...or a notation that its incomplete
-  rule(:incomplete) { str('incomplete') | str('incompl') >> dot? }
-
-  # An explicit year is one that includes a 'year' or 'yr'
-  rule(:year_text) { str('year') | (str('yr') >> dot?) }
-  rule(:year_explicit) { year_text >> lv_sep >> year_list.as(:years) }
-
-  # .. and implicit if it doesn't
-  rule(:year_implicit) { year_list.as(:iyears) }
-
-
-  # The "explicit" rule is added to by lv_generator, which sets @expl
-  rule(:explicit) { year_explicit | @expl }
-
-  # Sometimes, there's an unknown list of letters or number and we
-  # just don't know what it is
-
-  rule(:unknown_list) { (numerics | letter_range.as(:range)).as(:unknown_list) }
-
-
-  rule(:comp) { ords |
-      explicit |
-      yearmonth | monthyear |
-      year_implicit |
-      ind | suppl | ns |
-      seasons | months |
-      annual | rev | incomplete |
-      unknown_list }
-
-  rule(:ec_delim) { space? >> (comma | colon) >> space? | space }
-  rule(:ec) { comp >> (ec_delim >> ec).repeat(1) | comp }
-  rule(:ecp) { lparen >> space? >> ec >> space? >> rparen | ec }
-  rule(:ecset) { ecp >> (ec_delim.maybe >> ecset).repeat(1) | ecp }
-  rule(:ecset_or_sudoc) { sudoc.as(:sudoc) | ecset }
-
-
-  root(:ecset_or_sudoc)
+class V < Parslet::Parser
+  include HT::Atoms
+  rule(:volume) { HT::TaggedList.new(:volume, %w[volumes volume vols vol v v])}
+  rule(:number) { HT::TaggedList.new(:number, %w[numbers number nums num nos no ns n numbs numb])}
+  rule(:part)   { HT::TaggedList.new(:part, %w[parts part pts pt ps p])}
+  
+  rule(:iyear)  { HT::Year.new.iyear.as(:iyear) }
+  rule(:tyear)  { HT::Year.new.tyear }
+  
+  rule(:comp) { volume | tyear | number | part | tyear | iyear }
+  rule(:ec_delim) { space? >> (str(',')|str(':')) >> space? | space }
+  rule(:ecs) { (comp >> (ec_delim >> comp).repeat(0)).repeat(0).as(:ec) }
+  root(:ecs)
+  
 end
 
-
-RangeEndpoints = Struct.new(:firstval, :lastval) do
-  def to_irange
-    Integer(firstval)..Integer(lastval)
-  end
-
-  def to_charrange
-    (firstval.to_s)..(lastval.to_s)
-  end
-end
-
-
-class ECList < Array
-
-end
-
-class IntList < ECList
-end
-
-class LetterList < ECList
-end
-
-def to_i_or_irange(x)
-  if x.respond_to? :to_irange
-    x.to_irange
-  else
-    Integer(x)
-  end
-end
-
-def to_char_or_charrange(x)
-  if x.respond_to? :to_charrange
-    x.to_charrange
-  else
-    x.to_s
-  end
-end
-
-
-def year_endpoint_transform(f,s)
-  return f,s if f.is_a? DualYear or s.is_a? DualYear
-  f = f.to_s
-  s = s.to_s
-  if f.size == 4 and s.size == 2
-    if Integer(f[2..3]) > Integer(s)
-      s = (Integer(f) / 100 + 1).to_s + s
-    else
-      s = f[0..1] + s
-    end
-  end
-
-  if f.size == s.size and s.size == 2
-    # TODO
-    # Need to interpret this based on incoming years;
-    # Right now, assume 1999/2001
-    if Integer(f) > Integer(s)
-      f = '19' + f
-      s = '20' + s
-    else # assume 20th century
-      f = '19' + f
-      s = '19' + s
-    end
-  end
-  f = Integer(f) if f.is_a? String
-  s = Integer(s) if s.is_a? String
-  return f,s
-end
-
-def slashed_year(f,s, year1 = 1900, year2 = 2050)
-  f,s = year_endpoint_transform(f,s)
-  raise "Weird slashed year thingy" if s <= f
-  if s == f + 1
-    DualYear.new(f.to_i,s.to_i)
-  else
-    YearRange.new(f.to_i,s.to_i)
-  end
-end
-
-Numlet = Struct.new(:num,:let)
-
-DualYear  = Struct.new(:firstval, :lastval) do
-  def to_i
-    self
-  end
-end
-
-DualRange = Struct.new(:firstval, :lastval)
-
-YearRange = Struct.new(:firstval, :lastval) do
-  def to_i
-    begin
-      firstval..lastval
-    rescue ArgumentError
-      DualRange.new(firstval, lastval)
-    end
-
-  end
-end
-
-
-class ECTransform < Parslet::Transform
-
-  rule(:single=>simple(:x)) { x }
-  rule(:range => {:start=>simple(:s), :end=>simple(:e)}) { RangeEndpoints.new(s,e) }
-  rule(:range => simple(:x)) { x }
-
-  rule(:numeric => simple(:x)) {IntList[to_i_or_irange(x)]}
-  rule(:numeric => sequence(:a)) { IntList[a.map { |x| to_i_or_irange(x)}]}
-
-  rule(:letters => simple(:x)) {LetterList[to_char_or_charrange(x)]}
-  rule(:letters => sequence(:a)) { LetterList[a.map { |x| to_char_or_charrange(x)}]}
-
-  rule(:year_dual => {:start => simple(:s), :end=>simple(:e)}) { slashed_year(s,e)}
-  rule(:year_range =>{:start => simple(:s), :end=>simple(:e)}) { YearRange.new(*year_endpoint_transform(s,e))}
-
-  rule(:iyears => simple(:x)) { {:years => [x.to_i]} }
-  rule(:iyears => sequence(:a)) { {:years => a.map{|x| x.to_i}}}
-  rule(:numlets=>{:single=>{:numpart=>simple(:n), :letpart=>simple(:l)}}) { Numlet.new(Integer(n),l)}
-
-end
-
-
-
+    
+    
 if __FILE__ == $0
-  p = ECParser.new
-  t = ECTransform.new
+  p = V.new
+  puts p.parse('v 3')
+  # puts p.parse('v. 3-11, 22')
+  puts p.parse('no 3, vol. 11 part  1990')
+  
+end
+    
 
-  class FakeTP
-    def initialize(*args)
+__END__
 
+module HT::Range
+  include Parslet
+  rule(:strict_range) { base.as(:start) >> range_dash >> base.as(:end) }
+  rule(:range)   { strict_range.as(:range) | base.as(:single) }
+end
+
+module HT::List
+  include Parslet
+  rule(:list)  {  range_or_single >> (list_comma >> range_or_single).repeat}
+end
+
+module HT::RangeList
+  include Parslet
+  include 
+  
+
+class HT::Digits
+  include Parslet
+  include HT::Atoms
+  include HT::RangeList
+  rule(:base) { digits }
+end
+
+class HT::Letters
+  include Parslet
+  include HT::Atoms
+  include HT::RangeList
+  rule(:base) { letters }
+end
+
+
+class HT::Listable < Parslet::Parser
+  include HT::Atoms
+  
+  def initialize(*strtags)
+    super()
+    strtags.sort! {|a,b| b.length <=> a.length }
+    tags = str(strtags.shift)
+    while !strtags.empty?
+      tags = tags | str(strtags.shift)
     end
-
-    def post(*args, &blk)
-      blk.call(*args)
-    end
+    self.class.rule(:tag) { tags }    
   end
-
-  if defined? JRUBY_VERSION
-    thread_pool = Concurrent::ThreadPoolExecutor.new(
-        :min_threads     => 3,
-        :max_threads     => 3,
-        :max_queue       => 9,
-        :overflow_policy => :caller_runs
-    )
-  else
-    thread_pool = FakeTP.new
-  end
+  rule(:dlist) { HT::Digits.new.list.as(:digits)}
+  rule(:llist) { HT::Letters.new.list.as(:letters) }  
+  rule(:vlist) { dlist | llist }
+  rule(:tagged_list) { tag >> dot? >> space? >> vlist.as(:volume) }
+  
+  root :tagged_list
+end
 
 
-  def preprocess_line(l)
-      l.chomp!           # remove trailing cr
-      l.downcase!        # lowercase
-      l.gsub!('*', '')   # asterisks to nothing
-      l.gsub!(/\t/, ' ') # tabs to spaces
-      l.strip!           # leading and trailing spaces
-      l.gsub!(/[\.,:;\s]+\Z/, '') # trailing punctuation/space
-      l
-  end
-
-
-  pm = Mutex.new
-  em = Mutex.new
-
-  File.open('just_parsed.txt', 'w:utf-8') do |ep|
-    File.open('just_failed.txt', 'w:utf-8') do |ef|
-      infile = ARGV[0].nil? ? $stdin : File.open(ARGV[0])
-      infile.each do |x|
-        thread_pool.post(x) do
-          begin
-            orig = x
-            pt = p.parse(preprocess_line(x))
-            pm.synchronize do
-              ep.puts '%-20s %s' % [x, t.apply(pt)]
-            end
-
-          rescue Parslet::ParseFailed
-            em.synchronize do
-              ef.puts x
-            end
-
-          rescue => e
-            em.synchronize do
-              ef.puts '%-20s %s' % [x, e]
-            end
-
-          end
-        end
-      end
-
-    end
+class HT::Volume < Parslet::Parser
+  def self.new
+    HT::Listable.new('volumes', 'volume', 'vols', 'vol', 'v') 
   end
 end
+
+
+class HT:T < Parslet::Parser
+  rule(:volume) { HT::Listable.new('volumes', 'volume', 'vols', 'vol', 'v') }
+  rule(:number) { HT::Listable.new('numbers', 'number', 'nums', 'num', 'nos', 'no', 'ns', 'n', 'nmbrs', 'nmbr')}
+  
+  rule(:vn) { (volume | number) >> ()}
+
+
+# class HT::Volume < Parslet::Parser
+#   include HT::Atoms
+#
+#   root :volume
+#
+#   rule(:dlist) { HT::Digits.new.list.as(:digits)}
+#   rule(:llist) { HT::Letters.new.list.as(:letters) }
+#
+#   rule(:volstr) {
+#     str('volumes') |
+#     str('volume')  |
+#     str('vols')    |
+#     str('vol')     |
+#     str('vs')      |
+#     str('v')
+#   }
+#
+#   rule(:vlist) { dlist | llist }
+#   rule(:volume) { volstr >> dot? >> space? >> vlist.as(:volume) }
+# end
+
+
+
+
