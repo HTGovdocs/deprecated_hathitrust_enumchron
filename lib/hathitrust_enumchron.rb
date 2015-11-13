@@ -8,19 +8,6 @@ require 'hathitrust_enumchron/year'
 
 
 
-# Ugh. Years and year ranges.
-class HT::Year < Parslet::Parser
-  include HT::Atoms
-  rule(:year)   { (str('1') | str('2')) >> digit.repeat(3,3) }
-  rule(:halfyear) { digit.repeat(2,2)}
-  rule(:year_range_end) { year | halfyear }
-  rule(:yrange) { HT::Range.new(year, year_range_end)   }
-
-
-  rule(:iyear)  { HT::List.new(list_comma, yrange) }
-  rule(:tyear)  { HT::TaggedList.new(:tyear, %w[years year yrs yr], self.iyear)}
-end
-
 
 class V < Parslet::Parser
   include HT::Atoms

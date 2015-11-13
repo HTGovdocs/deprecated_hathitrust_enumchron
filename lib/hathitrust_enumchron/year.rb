@@ -37,3 +37,19 @@ class HT::YearList < Parslet::Parser
   rule(:year_list)  { HT::List.new(list_sep, year_range).repeat(1).as(:year)}
   root(:year_list)
 end
+
+class HT::YearTransform < Parslet::Transform
+  extend HT::SSDTransform
+  rule(slashed: simple(:x)) { x }
+  rule({single: simple(:x)}) { HT::SingleYear.new(x) }
+end
+
+
+class HT::SingleYear
+  attr_accessor :start
+  def initialize(start)
+    @start = start
+  end
+
+  alias_method :year, :start
+end

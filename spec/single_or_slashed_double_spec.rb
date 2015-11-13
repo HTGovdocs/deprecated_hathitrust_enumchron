@@ -9,12 +9,12 @@ describe "single" do
 
   it "works with numbers" do
     p = HT::SingleOrSlashedDouble.new(digits)
-    expect(p.parse('1990')).must_equal({:single=>"1990"})
+    expect(p.parse('1990')).must_equal("1990")
   end
 
   it "works with letters" do
     p = HT::SingleOrSlashedDouble.new(letters)
-    expect(p.parse('bill')).must_equal({:single=>"bill"})
+    expect(p.parse('bill')).must_equal("bill")
   end
 
   it "fails as expected" do

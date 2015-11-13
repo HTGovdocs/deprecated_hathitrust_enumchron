@@ -19,6 +19,13 @@ class HT::SingleOrSlashedDouble < Parslet::Parser
   rule(:slashsep) { slash }
   rule(:single) { base_start }
   rule(:double) { base_start.as(:start) >> slashsep >> base_end.as(:end)}
-  rule(:ssd) { double.as(:slashed) | single.as(:single) }
+  rule(:ssd) { double.as(:slashed) | single  }
   root(:ssd)
+end
+
+HT::Slashed = Struct.new(:start, :finish)
+
+module HT::SSDTransform
+  include Parslet::Transform
+  rule(slashed: {start: simple(:s), end: simple(:e)}) { {slashed: HT::Slashed.new(s,e) }}
 end
